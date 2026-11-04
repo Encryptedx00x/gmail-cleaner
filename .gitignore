@@ -1,0 +1,29 @@
+# Credenciais - NUNCA commitar
+credentials/credentials.json
+credentials/token.json
+.env
+
+# Dados locais
+data/cache.db
+data/*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Reports gerados
+reports/*.json
+reports/*.html
+reports/*.jsonl
+
+# IDE
+.vscode/
+.idea/
+*.swp
