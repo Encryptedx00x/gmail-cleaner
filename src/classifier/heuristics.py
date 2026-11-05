@@ -142,6 +142,23 @@ def quick_classify(email: dict) -> Optional[dict]:
             "has_unsubscribe": has_unsubscribe,
         }
 
+    # Credenciais têm precedência mesmo se também houver termos de spam.
+    if _contains_any(combined, PLATFORM_KEYWORDS):
+        return {
+            'category': 'platform_credential', 'confidence': .95,
+            'recommended_action': 'keep', 'safe_to_automate': False,
+            'reason': 'Conteúdo de credencial/recuperação de acesso protegido',
+            'has_unsubscribe': has_unsubscribe,
+        }
+
+    if _contains_any(subject, CERTIFICATE_KEYWORDS):
+        return {
+            'category': 'certificate', 'confidence': .90,
+            'recommended_action': 'label', 'safe_to_automate': True,
+            'reason': 'Assunto de certificado protegido contra exclusão',
+            'has_unsubscribe': has_unsubscribe,
+        }
+
     # ── 2. SPAM evidente ───────────────────────────────────────────────────
     if _matches_any_pattern(combined, SPAM_PATTERNS):
         return {

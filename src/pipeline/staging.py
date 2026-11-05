@@ -5,6 +5,7 @@ from rich.table import Table
 from rich.panel import Panel
 
 from src.classifier.cache import EmailCache
+from src.classifier.policy import normalize_classification, PROTECTED_CATEGORIES
 from src.utils.config import get_settings
 from src.utils.logger import get_logger, console
 
@@ -14,9 +15,6 @@ logger = get_logger(__name__)
 DESTRUCTIVE_ACTIONS = {"delete", "trash"}
 
 # Categorias protegidas — nunca incluídas em planos automáticos
-PROTECTED_CATEGORIES = {
-    "invoice", "important", "platform_credential", "action_required"
-}
 
 
 def generate_staging_plan(
@@ -41,7 +39,9 @@ def generate_staging_plan(
         Dict com: plan (lista de email_ids por ação), summary, preview_shown.
     """
     settings = get_settings()
-    cache = EmailCache()
+    if not settings.db_path.exists():
+        return {'plan': {}, 'summary': {}, 'total': 0, 'classifications': [], 'account': None}
+    cache = EmailCache(read_only=True)
 
     console.rule("[bold yellow]STAGING — Plano de Ação[/bold yellow]")
 
@@ -69,11 +69,21 @@ def generate_staging_plan(
         query_parts.append("ORDER BY category, action")
         rows = conn.execute(" ".join(query_parts), params).fetchall()
 
-    classifications = [dict(r) for r in rows]
+    classifications = []
+    for row in rows:
+        item = dict(row)
+        checked = normalize_classification({**item, 'recommended_action': item['action'],
+            'safe_to_automate': item['safe_to_automate'] == 1, 'has_unsubscribe': item['has_unsubscribe'] == 1},
+            threshold=settings.confidence_threshold)
+        if safe_only and not checked['safe_to_automate']:
+            continue
+        classifications.append({**item, 'category': checked['category'], 'action': checked['recommended_action'],
+                                'safe_to_automate': checked['safe_to_automate'], 'confidence': checked['confidence'],
+                                'reason': checked['reason']})
 
     if not classifications:
         console.print("[yellow]Nenhum email no staging. Execute 'scan' primeiro.[/yellow]")
-        return {"plan": {}, "summary": {}, "total": 0}
+        return {"plan": {}, "summary": {}, "total": 0, 'classifications': [], 'account': cache.get_account()}
 
     # Agrupa por ação
     plan: dict[str, list[str]] = {}
@@ -129,6 +139,7 @@ def generate_staging_plan(
         "summary": summary,
         "total": total,
         "classifications": classifications,
+        'account': cache.get_account(),
     }
 
 

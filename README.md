@@ -67,6 +67,8 @@ cp .env.example .env
 
 ### .env mínimo
 
+`OPENAI_API_KEY` só é necessária para classificação remota. Staging e simulação de planos do cache funcionam sem credenciais Google ou OpenAI. `scan --skip-claude` usa apenas heurísticas (o nome da flag foi preservado por compatibilidade).
+
 ```env
 OPENAI_API_KEY=sk-...
 GMAIL_CREDENTIALS_PATH=./credentials/credentials.json
@@ -90,8 +92,8 @@ python main.py staging
 # 4. Simular execução (dry-run)
 python main.py execute --dry-run
 
-# 5. Executar de verdade (pede confirmação)
-python main.py execute --category marketing
+# 5. Opcional: executar de verdade (exige LIVE e confirmação)
+python main.py execute --live --category marketing
 
 # 6. Gerar relatório
 python main.py report
@@ -107,7 +109,7 @@ python main.py scan                          # scan completo
 python main.py scan --limit 500             # limita a 500 emails
 python main.py scan --query "is:unread"     # filtra por query Gmail
 python main.py scan --skip-claude           # só heurísticas (mais rápido)
-python main.py scan --batch-size 20         # lotes menores para Claude
+python main.py scan --batch-size 20         # lotes menores para OpenAI
 ```
 
 ### `classify`
@@ -187,13 +189,13 @@ python main.py unsubscribe --limit 100
 
 ## 6. Segurança e testes sem Gmail real
 
-- **Deleções são sempre reversíveis**: emails vão para a lixeira, não são deletados permanentemente
+- **Lixeira**: a ação `delete` do plano move para a lixeira; a CLI não oferece exclusão permanente
 - **Dry-run por padrão**: `execute`, `delete-sender` e `mark-read` só alteram a caixa com `--live`
-- **Confirmação LIVE**: operações de escrita pedem confirmação. `execute --confirm` permite automação explícita; use após revisar o staging
-- **Safe mode**: variável `SAFE_MODE=true` bloqueia ações sem confirmação
-- **Log imutável**: todo email movido para lixeira é registrado em `reports/deleted_log.jsonl`
+- **Confirmação LIVE**: operações de escrita pedem confirmação. `execute --live --confirm` permite automação explícita; use após revisar o staging
+- **Safe mode**: variável mantida por compatibilidade; desligá-la não remove a confirmação de lixeira
+- **Log local**: movimentações são anexadas a `reports/deleted_log.jsonl`. Falha ao registrar um email já movido é reportada sem contar a movimentação duas vezes
 - **Categorias protegidas**: `invoice`, `important`, `platform_credential` nunca são deletadas automaticamente
-- **Confiança mínima**: emails com confiança < 0.80 vão para revisão manual
+- **Confiança mínima**: limiar global configurável; exclusões de marketing exigem ao menos 0.85 e spam 0.90. Cache de remetente isolado não autoriza ações
 - **Escopo OAuth mínimo**: somente `gmail.modify`; tokens locais são ignorados pelo Git
 
 Os testes usam mocks e não autenticam no Gmail:
@@ -202,7 +204,13 @@ Os testes usam mocks e não autenticam no Gmail:
 python -m pytest
 ```
 
-Depois de reduzir o escopo OAuth, remova `credentials/token.json` e autentique novamente para emitir um token com o novo escopo. Os testes não iniciam OAuth.
+Tokens com escopos diferentes dos configurados exigem novo OAuth pelo fluxo normal. Previews recusam tokens ausentes/expirados ou com escopo diferente, sem abrir login ou renovar/gravar token. A gravação normal usa substituição atômica. `execute`, `staging` e `mark-read` em dry-run usam apenas o cache; `delete-sender`/`unsubscribe` precisam ler o Gmail e exigem token já válido.
+
+O cache agora é vinculado à conta obtida no scan. Um cache antigo não vazio e sem vínculo não pode ser usado em LIVE nem vinculado silenciosamente: preserve-o e configure outro `DB_PATH`, por exemplo `./data/cache-v2.db`, antes de novo scan. Uma conta diferente não pode aplicar planos desse cache.
+
+A interface inicia com `streamlit run streamlit_app.py`; `.streamlit/config.toml` restringe o endereço a `127.0.0.1`. A tela Execute mostra os IDs e ações do plano limitado. Alterações na prévia exigem confirmação renovada e o executor verifica o snapshot aprovado.
+
+Auditoria final: **50 testes aprovados**, incluindo SQLite real temporário, respostas sintéticas de OAuth/OpenAI/Gmail e testes de rerun via Streamlit AppTest. Acesso externo é bloqueado nos testes. Isso não homologa OAuth real, classificação remota nem alterações em conta real. Evidências em `docs/recovery/02-final-audit.md`.
 
 ---
 

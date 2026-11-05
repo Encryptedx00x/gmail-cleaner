@@ -7,6 +7,7 @@ from openai import OpenAI
 
 from src.utils.config import get_settings
 from src.utils.logger import get_logger
+from src.classifier.policy import normalize_classification
 
 logger = get_logger(__name__)
 
@@ -124,6 +125,8 @@ def classify_batch(
         return []
 
     if client is None:
+        if not settings.openai_api_key:
+            raise ValueError('Configure OPENAI_API_KEY para classificação remota.')
         client = OpenAI(api_key=settings.openai_api_key)
 
     # Monta prompt com os emails numerados
@@ -163,9 +166,10 @@ def classify_batch(
             if tool_call.function.name == "classify_email":
                 try:
                     args = json.loads(tool_call.function.arguments)
-                    idx = args.get("email_index", 0)
-                    tool_results[idx] = args
-                except json.JSONDecodeError as exc:
+                    idx = args.get("email_index", 0) if isinstance(args, dict) else 0
+                    if type(idx) is int and 1 <= idx <= len(emails) and idx not in tool_results:
+                        tool_results[idx] = args
+                except (json.JSONDecodeError, TypeError) as exc:
                     logger.warning(f"Falha ao decodificar tool call: {exc}")
 
     # Alinha resultados com emails de entrada (por índice 1-based)
@@ -175,7 +179,7 @@ def classify_batch(
             result = dict(tool_results[i])
             result["email_id"] = email["id"]
             result.pop("email_index", None)
-            aligned.append(result)
+            aligned.append(normalize_classification(result, email, settings.confidence_threshold))
         else:
             logger.warning(
                 f"OpenAI não classificou email [{i}]: {email.get('subject', '')[:60]}"
@@ -219,10 +223,14 @@ def classify_all(
     from rich.progress import Progress, SpinnerColumn, TextColumn, MofNCompleteColumn
 
     settings = get_settings()
-    batch_size = batch_size or settings.max_batch_size
+    batch_size = settings.max_batch_size if batch_size is None else batch_size
+    if batch_size < 1 or batch_size > 100:
+        raise ValueError('batch_size deve estar entre 1 e 100.')
     all_results: list[dict] = []
 
     if client is None:
+        if not settings.openai_api_key:
+            raise ValueError('Configure OPENAI_API_KEY para classificação remota.')
         client = OpenAI(api_key=settings.openai_api_key)
 
     batches = [emails[i: i + batch_size] for i in range(0, len(emails), batch_size)]
@@ -247,7 +255,7 @@ def classify_all(
                 results = classify_batch(batch, client=client)
                 all_results.extend(results)
             except Exception as exc:
-                logger.error(f"Erro no lote {batch_num}: {exc}")
+                logger.error(f"Erro no lote {batch_num}: {type(exc).__name__}")
                 for email in batch:
                     all_results.append(
                         {
@@ -256,7 +264,7 @@ def classify_all(
                             "confidence": 0.0,
                             "recommended_action": "review",
                             "safe_to_automate": False,
-                            "reason": f"Erro na API OpenAI: {exc}",
+                            "reason": f"Erro na API OpenAI ({type(exc).__name__}); revisão manual necessária",
                             "has_unsubscribe": False,
                         }
                     )

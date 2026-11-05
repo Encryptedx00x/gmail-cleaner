@@ -5,6 +5,7 @@ from src.auth.oauth import get_gmail_service
 from src.classifier.cache import EmailCache
 from src.classifier.claude_classifier import classify_all
 from src.classifier.heuristics import quick_classify
+from src.classifier.policy import normalize_classification, PROTECTED_CATEGORIES
 from src.gmail.client import GmailClient
 from src.gmail.fetcher import fetch_all_messages
 from src.utils.config import get_settings
@@ -53,6 +54,7 @@ def run_scan(
 
     profile = client.get_profile()
     email_addr = profile.get("emailAddress", "desconhecido")
+    cache.ensure_account(email_addr, bind_empty=True)
     total_msgs = profile.get("messagesTotal", 0)
     console.print(f"  Conta: [bold]{email_addr}[/bold]")
     console.print(f"  Total na caixa: [bold]{total_msgs:,}[/bold] mensagens")
@@ -73,6 +75,9 @@ def run_scan(
     # ── 3. Separar já classificados (email_cache + sender_cache) ─────────────
     all_ids = [e["id"] for e in all_emails]
     unclassified_ids = set(cache.get_unclassified_ids(all_ids))
+    local_results = {email['id']: quick_classify(email) for email in all_emails}
+    unclassified_ids.update(email_id for email_id, local in local_results.items()
+                            if local and local['category'] in PROTECTED_CATEGORIES | {'certificate', 'course_access'})
 
     # Re-classificar unknowns: remove-os do cache para forçar re-envio ao Claude
     if reclassify_unknowns and not skip_claude:
@@ -103,6 +108,10 @@ def run_scan(
     sender_cache_hits = 0
 
     for email in to_classify:
+        result = local_results[email['id']]
+        if result:
+            heuristic_results.append({**result, 'email_id': email['id'], 'source': 'heuristic'})
+            continue
         # 4a. Sender cache (se remetente já classificado 3+ vezes)
         sender_hit = cache.get_sender_classification(email["from"])
         if sender_hit:
@@ -110,8 +119,8 @@ def run_scan(
                 "email_id": email["id"],
                 "category": sender_hit["category"],
                 "confidence": sender_hit["confidence"],
-                "recommended_action": _default_action(sender_hit["category"]),
-                "safe_to_automate": sender_hit["confidence"] >= settings.confidence_threshold,
+                "recommended_action": 'review',
+                "safe_to_automate": False,
                 "reason": f"Cache de remetente ({sender_hit['count']} classificações anteriores)",
                 "has_unsubscribe": bool(email.get("unsubscribe_link")),
                 "source": "sender_cache",
@@ -120,13 +129,7 @@ def run_scan(
             continue
 
         # 4b. Heurísticas locais
-        result = quick_classify(email)
-        if result:
-            result["email_id"] = email["id"]
-            result["source"] = "heuristic"
-            heuristic_results.append(result)
-        else:
-            needs_claude.append(email)
+        needs_claude.append(email)
 
     logger.info(
         f"Heurísticas: {len(heuristic_results):,} classificados "
@@ -160,6 +163,8 @@ def run_scan(
 
     # ── 6. Persistir no cache ─────────────────────────────────────────────────
     all_new_classifications = heuristic_results + claude_results
+    email_index = {email['id']: email for email in to_classify}
+    all_new_classifications = [normalize_classification(row, email_index.get(row['email_id']), settings.confidence_threshold) for row in all_new_classifications]
     if all_new_classifications:
         saved = cache.save_emails_batch(all_new_classifications)
         logger.info(f"Cache: {saved:,} novas classificações salvas")
@@ -168,7 +173,7 @@ def run_scan(
         email_index = {e["id"]: e for e in to_classify}
         for cls in all_new_classifications:
             email = email_index.get(cls["email_id"])
-            if email and cls["confidence"] > 0:
+            if email and cls["confidence"] > 0 and cls.get('source') != 'sender_cache':
                 cache.update_sender(
                     email["from"], cls["category"], cls["confidence"]
                 )

@@ -16,6 +16,10 @@ SENDER_CACHE_MIN_COUNT = 3
 SENDER_CACHE_MIN_CONFIDENCE = 0.85
 
 DDL = """
+CREATE TABLE IF NOT EXISTS cache_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sender_cache (
     sender_email    TEXT PRIMARY KEY,
     category        TEXT NOT NULL,
@@ -57,18 +61,21 @@ class EmailCache:
     - sender_cache: por remetente (reutiliza se >= 3 classificações com mesma categoria)
     """
 
-    def __init__(self, db_path: Optional[Path] = None) -> None:
+    def __init__(self, db_path: Optional[Path] = None, *, read_only: bool = False) -> None:
         settings = get_settings()
         self.db_path = Path(db_path or settings.db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
+        self.read_only = read_only
+        if not read_only:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_db()
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
-        """Context manager para conexão SQLite com WAL mode."""
-        conn = sqlite3.connect(str(self.db_path))
+        """Conexão transacional; leitura não inicializa schema nem sidecars WAL."""
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro', uri=True) if self.read_only else sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        if not self.read_only:
+            conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
@@ -84,6 +91,26 @@ class EmailCache:
         with self._connect() as conn:
             conn.executescript(DDL)
         logger.debug(f"Cache SQLite inicializado em: {self.db_path}")
+
+    def get_account(self) -> str | None:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cache_metadata'").fetchone():
+                return None
+            row = conn.execute("SELECT value FROM cache_metadata WHERE key='account_email'").fetchone()
+            return row['value'] if row else None
+
+    def ensure_account(self, email: str, *, bind_empty: bool = False) -> None:
+        account = self.get_account()
+        normalized = email.strip().casefold()
+        if '@' not in normalized or (account and account.casefold() != normalized):
+            raise RuntimeError('A conta Gmail não corresponde à conta vinculada ao cache. Use outro DB_PATH.')
+        if account:
+            return
+        with self._connect() as conn:
+            count = conn.execute('SELECT (SELECT COUNT(*) FROM email_cache) + (SELECT COUNT(*) FROM sender_cache)').fetchone()[0]
+            if not bind_empty or count or self.read_only:
+                raise RuntimeError('Cache sem vínculo de conta. Execute scan com um DB_PATH novo; preserve o cache anterior.')
+            conn.execute("INSERT INTO cache_metadata (key,value) VALUES ('account_email',?)", (normalized,))
 
     # ── email_cache ───────────────────────────────────────────────────────────
 

@@ -1,5 +1,8 @@
 """Wrapper da Gmail API com retry, rate limiting e tratamento de erros."""
 import time
+import json
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, TypeVar
 
 from googleapiclient.discovery import Resource
@@ -22,6 +25,13 @@ T = TypeVar("T")
 def _is_retryable(exc: Exception) -> bool:
     """Determina se o erro HTTP é recuperável (rate limit ou erro de servidor)."""
     if isinstance(exc, HttpError):
+        if exc.resp.status == 403:
+            try:
+                details = json.loads(exc.content.decode('utf-8'))
+                return any(item.get('reason') in {'rateLimitExceeded', 'userRateLimitExceeded', 'backendError'}
+                           for item in details.get('error', {}).get('errors', []))
+            except (ValueError, TypeError, AttributeError):
+                return False
         return exc.resp.status in (429, 500, 502, 503, 504)
     return False
 
@@ -69,9 +79,21 @@ class GmailClient:
                 return request.execute()
             except HttpError as exc:
                 if not _is_retryable(exc):
-                    logger.error(f"Erro não recuperável da Gmail API: {exc}")
+                    logger.error(f"Erro não recuperável da Gmail API: HTTP {exc.resp.status}")
+                    raise
+                if attempt == max_retries:
                     raise
                 wait = 2 ** attempt
+                retry_after = exc.resp.get('retry-after')
+                if retry_after:
+                    try:
+                        wait = max(wait, int(retry_after))
+                    except (ValueError, TypeError):
+                        try:
+                            retry_time = parsedate_to_datetime(retry_after)
+                            wait = max(wait, (retry_time - datetime.now(timezone.utc)).total_seconds())
+                        except (ValueError, TypeError):
+                            pass
                 logger.warning(
                     f"Rate limit / erro de servidor (tentativa {attempt}/{max_retries}). "
                     f"Aguardando {wait}s..."
@@ -90,6 +112,8 @@ class GmailClient:
         max_results: int = 100,
     ) -> dict:
         """Lista mensagens com suporte a paginação."""
+        if max_results < 1:
+            raise ValueError('max_results deve ser positivo.')
         kwargs: dict[str, Any] = {
             "userId": "me",
             "maxResults": min(max_results, 500),
@@ -167,12 +191,14 @@ class GmailClient:
         )
         return self._execute_with_retry(req)
 
-    def delete_message(self, message_id: str) -> None:
+    def delete_message(self, message_id: str, *, confirm: bool = False) -> None:
         """
         Deleta mensagem permanentemente (IRREVERSÍVEL).
 
         Só deve ser chamado após confirmação explícita do usuário.
         """
+        if confirm is not True:
+            raise ValueError('Exclusão permanente exige confirmação explícita.')
         req = self.service.users().messages().delete(
             userId="me", id=message_id
         )

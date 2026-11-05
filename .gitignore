@@ -1,11 +1,14 @@
 # Credenciais - NUNCA commitar
 credentials/credentials.json
 credentials/token.json
+credentials/*.json
 .env
 
 # Dados locais
 data/cache.db
 data/*.db
+data/*.db-wal
+data/*.db-shm
 
 # Python
 __pycache__/

@@ -205,7 +205,8 @@ def trash_messages(
 
                 # Log imutável
                 meta = meta_index.get(msg_id, {"id": msg_id})
-                _append_deleted_log(
+                try:
+                    _append_deleted_log(
                     {
                         "action": "trash",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -214,7 +215,9 @@ def trash_messages(
                         "subject": meta.get("subject", ""),
                         "date": meta.get("date", ""),
                     }
-                )
+                    )
+                except Exception as exc:
+                    logger.error(f'Mensagem {msg_id} já movida; falha no log: {type(exc).__name__}. Não repita a ação por causa do log.')
             except Exception as exc:
                 logger.warning(f"Falha ao mover {msg_id} para lixeira: {exc}")
                 counters["failed"] += 1
