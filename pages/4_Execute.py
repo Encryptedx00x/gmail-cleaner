@@ -163,6 +163,7 @@ else:
             value=False,
         )
 
+    # Qualquer modo LIVE altera a caixa, inclusive arquivar e aplicar labels.
     confirmed_live = True
     if not dry_run:
         confirmed_live = st.checkbox(

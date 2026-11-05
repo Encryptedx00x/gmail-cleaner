@@ -1,11 +1,11 @@
 # Gmail Cleaner
 
-CLI em Python para organizar automaticamente uma caixa do Gmail com 5.000+ emails usando heurísticas locais + Claude API como classificador inteligente.
+Aplicação Python com CLI e Streamlit para organizar uma caixa do Gmail usando heurísticas locais e OpenAI como classificador opcional. A integração atual usa OpenAI, não Claude.
 
 ## Fluxo
 
 ```
-Scan → Heurísticas (80%) → Claude API (ambíguos) → Staging/Dry-run → Confirmação manual → Execute
+Scan → Heurísticas locais → OpenAI (ambíguos) → Staging/Dry-run → Confirmação manual → Execute
 ```
 
 ---
@@ -39,7 +39,7 @@ Scan → Heurísticas (80%) → Claude API (ambíguos) → Staging/Dry-run → C
 1. Menu lateral → **APIs e Serviços** → **Tela de consentimento OAuth**
 2. Tipo: **Externo** → Criar
 3. Preencha nome do app e email
-4. Escopos: adicione `gmail.modify` e `gmail.labels`
+4. O aplicativo solicita somente `gmail.modify`, necessário para as ações de organização disponíveis. O escopo `gmail.labels` adicional não é solicitado.
 5. Usuários de teste: adicione seu Gmail
 
 ---
@@ -57,6 +57,8 @@ source .venv/bin/activate      # Linux/Mac
 
 # Instale dependências
 pip install -r requirements.txt
+# Para executar os testes automatizados:
+pip install -r requirements-dev.txt
 
 # Configure variáveis de ambiente
 cp .env.example .env
@@ -66,8 +68,9 @@ cp .env.example .env
 ### .env mínimo
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
 GMAIL_CREDENTIALS_PATH=./credentials/credentials.json
+GMAIL_TOKEN_PATH=./credentials/token.json
 ```
 
 ---
@@ -123,11 +126,11 @@ python main.py staging --preview 20          # mais exemplos
 
 ### `execute`
 ```bash
-python main.py execute --dry-run                        # simula
-python main.py execute --category marketing --dry-run   # simula só marketing
-python main.py execute --category marketing             # executa (pede confirmação)
-python main.py execute --category marketing --confirm   # executa sem prompt
-python main.py execute --action archive                 # arquiva tudo
+python main.py execute                                  # simula (padrão)
+python main.py execute --category marketing             # simula só marketing
+python main.py execute --live --category marketing      # LIVE: executa após confirmação
+python main.py execute --live --confirm --category marketing  # LIVE: confirmação via flag
+python main.py execute --live --action archive          # LIVE: arquiva após confirmação
 ```
 
 ### `show`
@@ -139,14 +142,14 @@ python main.py show category marketing --limit 50
 
 ### `delete-sender`
 ```bash
-python main.py delete-sender "noreply@shopify.com" --dry-run
-python main.py delete-sender "noreply@shopify.com"   # executa com confirmação
+python main.py delete-sender "noreply@shopify.com"     # simula (padrão)
+python main.py delete-sender "noreply@shopify.com" --live  # pede confirmação antes de mover para lixeira
 ```
 
 ### `mark-read`
 ```bash
-python main.py mark-read --category marketing --dry-run
-python main.py mark-read --category newsletter
+python main.py mark-read --category marketing           # simula (padrão)
+python main.py mark-read --category newsletter --live   # pede confirmação antes de marcar como lido
 ```
 
 ### `report`
@@ -182,21 +185,31 @@ python main.py unsubscribe --limit 100
 
 ---
 
-## 6. Segurança
+## 6. Segurança e testes sem Gmail real
 
 - **Deleções são sempre reversíveis**: emails vão para a lixeira, não são deletados permanentemente
-- **Confirmação obrigatória**: digitação de `DELETE` ou `EXECUTE` antes de ações em massa
+- **Dry-run por padrão**: `execute`, `delete-sender` e `mark-read` só alteram a caixa com `--live`
+- **Confirmação LIVE**: operações de escrita pedem confirmação. `execute --confirm` permite automação explícita; use após revisar o staging
 - **Safe mode**: variável `SAFE_MODE=true` bloqueia ações sem confirmação
 - **Log imutável**: todo email movido para lixeira é registrado em `reports/deleted_log.jsonl`
 - **Categorias protegidas**: `invoice`, `important`, `platform_credential` nunca são deletadas automaticamente
 - **Confiança mínima**: emails com confiança < 0.80 vão para revisão manual
+- **Escopo OAuth mínimo**: somente `gmail.modify`; tokens locais são ignorados pelo Git
+
+Os testes usam mocks e não autenticam no Gmail:
+
+```bash
+python -m pytest
+```
+
+Depois de reduzir o escopo OAuth, remova `credentials/token.json` e autentique novamente para emitir um token com o novo escopo. Os testes não iniciam OAuth.
 
 ---
 
 ## 7. Arquitetura
 
 ```
-Scan → Heurísticas locais → [ambíguos] → Claude API (lotes de 30) → SQLite cache
+Scan → Heurísticas locais → [ambíguos] → OpenAI API (lotes de 30) → SQLite cache
                                                     ↓
                                             Staging (dry-run)
                                                     ↓

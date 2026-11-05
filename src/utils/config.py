@@ -37,10 +37,8 @@ class Settings(BaseSettings):
 
     # Gmail API
     gmail_scopes: list[str] = Field(
-        default=[
-            "https://www.googleapis.com/auth/gmail.modify",
-            "https://www.googleapis.com/auth/gmail.labels",
-        ]
+        # gmail.modify inclui as operações sobre labels; gmail.labels é redundante.
+        default=["https://www.googleapis.com/auth/gmail.modify"]
     )
 
 

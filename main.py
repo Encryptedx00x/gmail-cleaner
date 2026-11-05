@@ -14,7 +14,7 @@ from src.utils.logger import console, get_logger
 logger = get_logger(__name__)
 app = typer.Typer(
     name="gmail-cleaner",
-    help="Organiza automaticamente sua caixa do Gmail com heurísticas + Claude API.",
+    help="Organiza sua caixa do Gmail com heurísticas + OpenAI API.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -54,8 +54,8 @@ def _check_env() -> None:
 def scan(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limite de emails a escanear"),
     query: str = typer.Option("", "--query", "-q", help="Filtro Gmail (ex: 'is:unread in:inbox')"),
-    batch_size: Optional[int] = typer.Option(None, "--batch-size", "-b", help="Emails por lote Claude"),
-    skip_claude: bool = typer.Option(False, "--skip-claude", help="Pular Claude (só heurísticas)"),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size", "-b", help="Emails por lote OpenAI"),
+    skip_claude: bool = typer.Option(False, "--skip-claude", help="Pular classificação OpenAI (só heurísticas)"),
 ) -> None:
     """Escaneia a caixa do Gmail e classifica todos os emails."""
     _check_env()
@@ -128,7 +128,7 @@ def staging(
 def execute(
     category: Optional[str] = typer.Option(None, "--category", "-c", help="Executar só esta categoria"),
     action: Optional[str] = typer.Option(None, "--action", "-a", help="Executar só esta ação"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simular sem executar"),
+    dry_run: bool = typer.Option(True, "--dry-run/--live", help="Simular (padrão) ou executar alterações"),
     confirm: bool = typer.Option(False, "--confirm", help="Confirmar execução sem prompt interativo"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Máximo de emails"),
 ) -> None:
@@ -158,10 +158,10 @@ def execute(
 @app.command(name="delete-sender")
 def delete_sender(
     sender_email: str = typer.Argument(..., help="Endereço de email do remetente"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simular sem executar (recomendado)"),
+    dry_run: bool = typer.Option(True, "--dry-run/--live", help="Simular (padrão) ou mover para lixeira"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l"),
 ) -> None:
-    """Deleta todos os emails de um remetente específico."""
+    """Move para a lixeira mensagens de um remetente (simulação por padrão)."""
     _check_env()
     from src.classifier.cache import EmailCache
     from src.auth.oauth import get_gmail_service
@@ -197,7 +197,7 @@ def delete_sender(
 @app.command(name="mark-read")
 def mark_read(
     category: Optional[str] = typer.Option(None, "--category", "-c", help="Filtrar por categoria"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simular"),
+    dry_run: bool = typer.Option(True, "--dry-run/--live", help="Simular (padrão) ou marcar como lido"),
 ) -> None:
     """Marca emails como lidos por categoria."""
     _check_env()
@@ -220,6 +220,11 @@ def mark_read(
     console.print(f"Marcando {len(ids)} emails como lidos...")
 
     if ids:
+        if not dry_run and not typer.confirm(
+            f"Marcar {len(ids)} emails como lidos no Gmail?", default=False
+        ):
+            console.print("Operação cancelada.")
+            return
         service = get_gmail_service()
         client = GmailClient(service)
         counters = mark_as_read(client, ids, dry_run=dry_run)
