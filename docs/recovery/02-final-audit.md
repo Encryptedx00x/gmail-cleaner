@@ -30,3 +30,7 @@ Base: `origin/master`; commit `69ba511` preservado. Nenhuma conta Gmail ou OpenA
 ## Decisão
 
 **GO para merge como ferramenta local, com ressalva de integração externa**. OAuth real, acesso Gmail e classificação OpenAI real continuam não homologados. Cache legado não vazio deve ser preservado e substituído por novo DB_PATH antes de LIVE. Classificação continua sujeita a erro semântico; revisão humana do plano é necessária. PR permanece draft para decisão do proprietário.
+
+## Preparação para integração
+
+O CI executa os testes com OAuth, Gmail e OpenAI sintéticos, sem credenciais nem operações em emails reais. Integrações reais continuam não homologadas.
