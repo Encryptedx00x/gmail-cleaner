@@ -1,6 +1,8 @@
 """Execute — aplica ações após confirmação."""
 import threading
 import time
+import hashlib
+import json
 
 import pandas as pd
 import streamlit as st
@@ -10,10 +12,10 @@ from ui.helpers import (
     render_sidebar_status,
 )
 
-# Módulo-level: threads não têm ScriptRunContext no Streamlit.
-_EXEC_STATE: dict = {"running": False, "result": None, "error": None}
-
 st.set_page_config(page_title="Execute — Gmail Cleaner", page_icon="⚡", layout="wide")
+if '_execute_worker_state' not in st.session_state:
+    st.session_state['_execute_worker_state'] = {'running': False, 'result': None, 'error': None}
+_EXEC_STATE = st.session_state['_execute_worker_state']
 render_sidebar_status()
 
 st.title("⚡ Execute")
@@ -30,7 +32,7 @@ for key, default in [
 
 
 # ── Thread de execução ────────────────────────────────────────────────────────
-def _run_execute(category, action, dry_run, limit):
+def _run_execute(category, action, dry_run, limit, approved_plan):
     _EXEC_STATE["running"] = True
     _EXEC_STATE["result"] = None
     _EXEC_STATE["error"] = None
@@ -42,6 +44,7 @@ def _run_execute(category, action, dry_run, limit):
             dry_run=dry_run,
             confirm=True,   # bypassa input() — confirmação feita pela UI
             limit=limit or None,
+            approved_plan=approved_plan,
         )
         _EXEC_STATE["result"] = result
     except Exception as exc:
@@ -149,11 +152,26 @@ else:
 
     st.markdown("---")
 
+    from src.pipeline.executor import prepare_execution_plan
+    selected_category = None if category_opt == 'todas' else category_opt
+    selected_action = None if action_opt == 'todas' else action_opt
+    selected_limit = int(limit_exec) if limit_exec > 0 else None
+    preview = prepare_execution_plan(selected_category, selected_action, selected_limit)
+    plan_key = hashlib.sha256(json.dumps(preview, sort_keys=True).encode()).hexdigest()[:16]
+    st.subheader('Prévia do plano selecionado')
+    st.caption(f"Conta do cache: {preview.get('account') or 'não vinculada'} · {preview['total']} mensagens")
+    if preview['classifications']:
+        st.dataframe(pd.DataFrame(preview['classifications'])[['email_id', 'category', 'action', 'confidence', 'reason']], hide_index=True)
+    else:
+        st.info('Nenhuma mensagem elegível neste plano.')
+    if not dry_run and not preview.get('account'):
+        st.error('Cache sem vínculo de conta. Faça um scan com DB_PATH novo antes de usar LIVE.')
+
     # Confirmações de segurança
     st.subheader("Confirmações de segurança")
 
     needs_destructive_confirm = (
-        action_opt in ("todas", "delete", "trash") and not dry_run
+        any(name in DESTRUCTIVE_ACTIONS for name in preview['plan']) and not dry_run
     )
     confirmed_destructive = True
 
@@ -161,16 +179,19 @@ else:
         confirmed_destructive = st.checkbox(
             "✅ Confirmo que quero mover emails para a **lixeira** (reversível via Gmail → Lixeira)",
             value=False,
+            key='confirm_destructive_' + plan_key,
         )
 
+    # Qualquer modo LIVE altera a caixa, inclusive arquivar e aplicar labels.
     confirmed_live = True
     if not dry_run:
         confirmed_live = st.checkbox(
             "✅ Confirmo que o Staging foi revisado e quero executar em modo LIVE",
             value=False,
+            key='confirm_live_' + plan_key,
         )
 
-    can_execute = confirmed_destructive and confirmed_live
+    can_execute = confirmed_destructive and confirmed_live and preview['total'] > 0 and (dry_run or bool(preview.get('account')))
 
     st.markdown("---")
 
@@ -195,6 +216,7 @@ else:
                     None if action_opt == "todas" else action_opt,
                     dry_run,
                     int(limit_exec) if limit_exec > 0 else None,
+                    preview,
                 ),
                 daemon=True,
             )

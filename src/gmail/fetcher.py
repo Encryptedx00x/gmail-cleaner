@@ -72,7 +72,13 @@ def fetch_all_messages(
     Yields:
         Dicts normalizados por parse_message().
     """
+    if limit is not None and limit < 1:
+        raise ValueError('limit deve ser positivo.')
+    if not 1 <= chunk_size <= 500:
+        raise ValueError('chunk_size deve estar entre 1 e 500.')
     fetched = 0
+    seen_ids: set[str] = set()
+    seen_tokens: set[str] = set()
     page_token: Optional[str] = None
 
     # Primeiro: conta total aproximado (apenas para progress bar)
@@ -107,15 +113,15 @@ def fetch_all_messages(
             )
 
             message_refs = response.get("messages", [])
-            if not message_refs:
-                break
-
             ids = [m["id"] for m in message_refs]
 
             # Resolve metadados de cada ID
             for msg_id in ids:
+                if msg_id in seen_ids:
+                    continue
                 if limit and fetched >= limit:
                     break
+                seen_ids.add(msg_id)
                 try:
                     raw = client.get_message(msg_id, format="metadata")
                     yield parse_message(raw)
@@ -127,6 +133,9 @@ def fetch_all_messages(
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
+            if page_token in seen_tokens:
+                raise RuntimeError('Token de paginação repetido; a leitura foi interrompida sem declarar conclusão.')
+            seen_tokens.add(page_token)
 
     logger.info(f"Total de mensagens carregadas: {fetched:,}")
 

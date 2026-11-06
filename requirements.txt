@@ -14,20 +14,21 @@ click==8.1.7          # pin obrigatório: click 8.3+ quebra a API do typer 0.12.
 rich==13.7.1
 
 # Config e validação
-pydantic==2.7.1
-pydantic-settings==2.2.1
-python-dotenv==1.0.1
+pydantic==2.10.6
+pydantic-settings==2.7.1
+python-dotenv==1.2.2
 
 # Retry / rate limit
 tenacity==8.3.0
 
 # Relatórios
-jinja2==3.1.4
+jinja2==3.1.6
 
 # Utilitários
 tqdm==4.66.4
 
 # Web UI
-streamlit==1.40.2
+streamlit==1.66.1
 plotly==5.22.0
-pandas==2.2.2
+pandas==2.2.3
+pillow==13.0.0

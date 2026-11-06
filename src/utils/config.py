@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     )
 
     # APIs
-    openai_api_key: str = Field(..., description="Chave da API OpenAI")
+    openai_api_key: str = Field(default='', description="Chave da API OpenAI, exigida apenas para classificação remota")
     gmail_credentials_path: Path = Field(
         default=Path("./credentials/credentials.json")
     )
@@ -26,10 +26,10 @@ class Settings(BaseSettings):
     # Comportamento
     log_level: str = Field(default="INFO")
     safe_mode: bool = Field(default=True)
-    max_batch_size: int = Field(default=30)
-    confidence_threshold: float = Field(default=0.80)
-    max_retries: int = Field(default=3)
-    rate_limit_delay: float = Field(default=0.1)
+    max_batch_size: int = Field(default=30, ge=1, le=100)
+    confidence_threshold: float = Field(default=0.80, ge=0, le=1)
+    max_retries: int = Field(default=3, ge=1)
+    rate_limit_delay: float = Field(default=0.1, ge=0)
 
     # Modelo OpenAI
     openai_model: str = Field(default="gpt-4o-mini")
@@ -37,10 +37,8 @@ class Settings(BaseSettings):
 
     # Gmail API
     gmail_scopes: list[str] = Field(
-        default=[
-            "https://www.googleapis.com/auth/gmail.modify",
-            "https://www.googleapis.com/auth/gmail.labels",
-        ]
+        # gmail.modify inclui as operações sobre labels; gmail.labels é redundante.
+        default=["https://www.googleapis.com/auth/gmail.modify"]
     )
 
 

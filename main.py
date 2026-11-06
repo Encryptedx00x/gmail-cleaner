@@ -1,5 +1,7 @@
 """Gmail Cleaner — CLI principal."""
 import json
+import re
+from html import escape
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +16,7 @@ from src.utils.logger import console, get_logger
 logger = get_logger(__name__)
 app = typer.Typer(
     name="gmail-cleaner",
-    help="Organiza automaticamente sua caixa do Gmail com heurísticas + Claude API.",
+    help="Organiza sua caixa do Gmail com heurísticas + OpenAI API.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -25,13 +27,13 @@ app.add_typer(show_app, name="show")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _check_env() -> None:
+def _check_env(require_ai: bool = True) -> None:
     """Verifica variáveis obrigatórias antes de qualquer comando."""
     from dotenv import load_dotenv
     load_dotenv()
     import os
     missing = []
-    if not os.getenv("OPENAI_API_KEY"):
+    if require_ai and not os.getenv("OPENAI_API_KEY"):
         missing.append("OPENAI_API_KEY")
     if not Path(os.getenv("GMAIL_CREDENTIALS_PATH", "./credentials/credentials.json")).exists():
         missing.append("GMAIL_CREDENTIALS_PATH (arquivo não encontrado)")
@@ -54,11 +56,11 @@ def _check_env() -> None:
 def scan(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limite de emails a escanear"),
     query: str = typer.Option("", "--query", "-q", help="Filtro Gmail (ex: 'is:unread in:inbox')"),
-    batch_size: Optional[int] = typer.Option(None, "--batch-size", "-b", help="Emails por lote Claude"),
-    skip_claude: bool = typer.Option(False, "--skip-claude", help="Pular Claude (só heurísticas)"),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size", "-b", help="Emails por lote OpenAI"),
+    skip_claude: bool = typer.Option(False, "--skip-claude", help="Pular classificação OpenAI (só heurísticas)"),
 ) -> None:
     """Escaneia a caixa do Gmail e classifica todos os emails."""
-    _check_env()
+    _check_env(require_ai=not skip_claude)
     from src.pipeline.scan import run_scan
     run_scan(limit=limit, query=query, batch_size=batch_size, skip_claude=skip_claude)
 
@@ -97,6 +99,7 @@ def classify(
     from src.gmail.client import GmailClient
     service = get_gmail_service()
     client = GmailClient(service)
+    cache.ensure_account(client.get_profile().get('emailAddress', ''))
 
     emails = client.batch_get_messages(ids[:limit or len(ids)])
     from src.gmail.fetcher import parse_message
@@ -128,12 +131,13 @@ def staging(
 def execute(
     category: Optional[str] = typer.Option(None, "--category", "-c", help="Executar só esta categoria"),
     action: Optional[str] = typer.Option(None, "--action", "-a", help="Executar só esta ação"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simular sem executar"),
+    dry_run: bool = typer.Option(True, "--dry-run/--live", help="Simular (padrão) ou executar alterações"),
     confirm: bool = typer.Option(False, "--confirm", help="Confirmar execução sem prompt interativo"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Máximo de emails"),
 ) -> None:
     """Executa as ações planejadas no staging."""
-    _check_env()
+    if not dry_run:
+        _check_env(require_ai=False)
 
     if not dry_run and not confirm:
         console.print(
@@ -158,22 +162,22 @@ def execute(
 @app.command(name="delete-sender")
 def delete_sender(
     sender_email: str = typer.Argument(..., help="Endereço de email do remetente"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simular sem executar (recomendado)"),
+    dry_run: bool = typer.Option(True, "--dry-run/--live", help="Simular (padrão) ou mover para lixeira"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l"),
 ) -> None:
-    """Deleta todos os emails de um remetente específico."""
-    _check_env()
-    from src.classifier.cache import EmailCache
+    """Move para a lixeira mensagens de um remetente (simulação por padrão)."""
+    if not re.fullmatch(r'[^@\s<>"()]+@[^@\s<>"()]+\.[^@\s<>"()]+', sender_email):
+        raise typer.BadParameter('Informe apenas um endereço de email válido, sem filtros Gmail.')
+    _check_env(require_ai=False)
     from src.auth.oauth import get_gmail_service
     from src.gmail.client import GmailClient
     from src.gmail.actions import trash_messages
     from src.gmail.fetcher import fetch_all_messages, parse_message
 
-    cache = EmailCache()
-    service = get_gmail_service()
+    service = get_gmail_service(allow_token_updates=not dry_run)
     client = GmailClient(service)
 
-    query = f"from:{sender_email}"
+    query = f'from:"{sender_email}"'
     console.print(f"Buscando emails de: [bold]{sender_email}[/bold]")
     emails = list(fetch_all_messages(client, query=query, limit=limit))
 
@@ -197,16 +201,21 @@ def delete_sender(
 @app.command(name="mark-read")
 def mark_read(
     category: Optional[str] = typer.Option(None, "--category", "-c", help="Filtrar por categoria"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simular"),
+    dry_run: bool = typer.Option(True, "--dry-run/--live", help="Simular (padrão) ou marcar como lido"),
 ) -> None:
     """Marca emails como lidos por categoria."""
-    _check_env()
+    if not dry_run:
+        _check_env(require_ai=False)
     from src.classifier.cache import EmailCache
     from src.auth.oauth import get_gmail_service
     from src.gmail.client import GmailClient
     from src.gmail.actions import mark_as_read
 
-    cache = EmailCache()
+    from src.utils.config import get_settings
+    if not get_settings().db_path.exists():
+        console.print('Nenhum cache disponível; nada a simular.')
+        return
+    cache = EmailCache(read_only=True)
 
     with cache._connect() as conn:
         query = "SELECT email_id FROM email_cache WHERE 1=1"
@@ -220,8 +229,16 @@ def mark_read(
     console.print(f"Marcando {len(ids)} emails como lidos...")
 
     if ids:
-        service = get_gmail_service()
-        client = GmailClient(service)
+        if not dry_run and not typer.confirm(
+            f"Marcar {len(ids)} emails como lidos no Gmail?", default=False
+        ):
+            console.print("Operação cancelada.")
+            return
+        client = None
+        if not dry_run:
+            service = get_gmail_service()
+            client = GmailClient(service)
+            cache.ensure_account(client.get_profile().get('emailAddress', ''))
         counters = mark_as_read(client, ids, dry_run=dry_run)
         console.print(f"Resultado: {counters}")
 
@@ -259,15 +276,16 @@ def unsubscribe(
     limit: int = typer.Option(50, "--limit", "-l", help="Máximo de links"),
 ) -> None:
     """Detecta e lista links de unsubscribe de newsletters."""
-    _check_env()
     from src.classifier.cache import EmailCache
     from src.auth.oauth import get_gmail_service
     from src.gmail.client import GmailClient
     from src.gmail.actions import extract_unsubscribe_links
 
-    cache = EmailCache()
-    service = get_gmail_service()
-    client = GmailClient(service)
+    from src.utils.config import get_settings
+    if not get_settings().db_path.exists():
+        console.print('Nenhum cache disponível; nada a listar.')
+        return
+    cache = EmailCache(read_only=True)
 
     with cache._connect() as conn:
         rows = conn.execute(
@@ -279,6 +297,11 @@ def unsubscribe(
     if not ids:
         console.print("[yellow]Nenhum email com unsubscribe detectado.[/yellow]")
         return
+
+    _check_env(require_ai=False)
+    service = get_gmail_service(allow_token_updates=not dry_run)
+    client = GmailClient(service)
+    cache.ensure_account(client.get_profile().get('emailAddress', ''))
 
     raw_emails = client.batch_get_messages(ids)
     from src.gmail.fetcher import parse_message
@@ -375,11 +398,11 @@ def show_category(
 def _generate_html_report(stats: dict, timestamp: str) -> str:
     """Gera HTML simples para o relatório."""
     rows_category = "".join(
-        f"<tr><td>{r['category']}</td><td>{r['cnt']}</td></tr>"
+        f"<tr><td>{escape(str(r['category']))}</td><td>{r['cnt']}</td></tr>"
         for r in stats.get("by_category", [])
     )
     rows_action = "".join(
-        f"<tr><td>{r['action']}</td><td>{r['cnt']}</td></tr>"
+        f"<tr><td>{escape(str(r['action']))}</td><td>{r['cnt']}</td></tr>"
         for r in stats.get("by_action", [])
     )
     return f"""<!DOCTYPE html>

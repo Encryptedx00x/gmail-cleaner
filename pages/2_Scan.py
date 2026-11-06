@@ -9,23 +9,25 @@ from ui.helpers import check_env, render_sidebar_status
 
 # Módulo-level: threads não têm ScriptRunContext no Streamlit, então não podem
 # escrever em st.session_state diretamente de forma confiável. Usamos dict global.
-_SCAN_STATE: dict = {"running": False, "result": None, "error": None}
-
 st.set_page_config(page_title="Scan — Gmail Cleaner", page_icon="🔍", layout="wide")
+if '_scan_worker_state' not in st.session_state:
+    st.session_state['_scan_worker_state'] = {'running': False, 'result': None, 'error': None}
+_SCAN_STATE = st.session_state['_scan_worker_state']
 render_sidebar_status()
 
 st.title("🔍 Scan de Emails")
 st.markdown("Busca emails do Gmail e classifica com heurísticas + OpenAI.")
 
 # ── Verifica ambiente ─────────────────────────────────────────────────────────
-ok, missing = check_env()
+ok, missing = check_env(require_ai=False)
 if not ok:
     for m in missing:
         st.error(f"⚠️ {m}")
     st.stop()
 
 # OAuth check
-token_path = Path("./credentials/token.json")
+from src.utils.config import get_settings
+token_path = get_settings().gmail_token_path
 if not token_path.exists():
     st.warning(
         "**Token OAuth não encontrado.** Execute no terminal primeiro para autenticar:\n"

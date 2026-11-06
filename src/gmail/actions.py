@@ -7,7 +7,6 @@ from typing import Optional
 from rich.progress import Progress, SpinnerColumn, TextColumn, MofNCompleteColumn
 
 from src.gmail.client import GmailClient
-from src.utils.config import get_settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,7 +24,7 @@ def _append_deleted_log(entry: dict) -> None:
 def archive_messages(
     client: GmailClient,
     message_ids: list[str],
-    dry_run: bool = False,
+    dry_run: bool = True,
 ) -> dict[str, int]:
     """
     Remove label INBOX das mensagens (arquiva).
@@ -66,7 +65,7 @@ def archive_messages(
 def mark_as_read(
     client: GmailClient,
     message_ids: list[str],
-    dry_run: bool = False,
+    dry_run: bool = True,
 ) -> dict[str, int]:
     """
     Remove label UNREAD das mensagens.
@@ -108,7 +107,7 @@ def label_messages(
     client: GmailClient,
     message_ids: list[str],
     label_name: str,
-    dry_run: bool = False,
+    dry_run: bool = True,
 ) -> dict[str, int]:
     """
     Aplica uma label a uma lista de mensagens, criando-a se necessário.
@@ -156,7 +155,7 @@ def trash_messages(
     client: GmailClient,
     message_ids: list[str],
     email_metas: list[dict],
-    dry_run: bool = False,
+    dry_run: bool = True,
     require_confirm: bool = True,
 ) -> dict[str, int]:
     """
@@ -175,14 +174,12 @@ def trash_messages(
         Dict com contadores: success, failed, skipped.
     """
     counters = {"success": 0, "failed": 0, "skipped": 0}
-    settings = get_settings()
-
     if dry_run:
         logger.info(f"[DRY-RUN] Moveria {len(message_ids)} emails para lixeira.")
         counters["skipped"] = len(message_ids)
         return counters
 
-    if settings.safe_mode and require_confirm:
+    if require_confirm:
         print(f"\n[AVISO] Você está prestes a mover {len(message_ids)} emails para a LIXEIRA.")
         print("Esta ação é reversível (lixeira), mas requer confirmação.")
         confirmation = input("Digite DELETE para confirmar: ").strip()
@@ -208,7 +205,8 @@ def trash_messages(
 
                 # Log imutável
                 meta = meta_index.get(msg_id, {"id": msg_id})
-                _append_deleted_log(
+                try:
+                    _append_deleted_log(
                     {
                         "action": "trash",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -217,7 +215,9 @@ def trash_messages(
                         "subject": meta.get("subject", ""),
                         "date": meta.get("date", ""),
                     }
-                )
+                    )
+                except Exception as exc:
+                    logger.error(f'Mensagem {msg_id} já movida; falha no log: {type(exc).__name__}. Não repita a ação por causa do log.')
             except Exception as exc:
                 logger.warning(f"Falha ao mover {msg_id} para lixeira: {exc}")
                 counters["failed"] += 1

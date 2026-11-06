@@ -1,11 +1,11 @@
 # Gmail Cleaner
 
-CLI em Python para organizar automaticamente uma caixa do Gmail com 5.000+ emails usando heurísticas locais + Claude API como classificador inteligente.
+Aplicação Python com CLI e Streamlit para organizar uma caixa do Gmail usando heurísticas locais e OpenAI como classificador opcional. A integração atual usa OpenAI, não Claude.
 
 ## Fluxo
 
 ```
-Scan → Heurísticas (80%) → Claude API (ambíguos) → Staging/Dry-run → Confirmação manual → Execute
+Scan → Heurísticas locais → OpenAI (ambíguos) → Staging/Dry-run → Confirmação manual → Execute
 ```
 
 ---
@@ -39,7 +39,7 @@ Scan → Heurísticas (80%) → Claude API (ambíguos) → Staging/Dry-run → C
 1. Menu lateral → **APIs e Serviços** → **Tela de consentimento OAuth**
 2. Tipo: **Externo** → Criar
 3. Preencha nome do app e email
-4. Escopos: adicione `gmail.modify` e `gmail.labels`
+4. O aplicativo solicita somente `gmail.modify`, necessário para as ações de organização disponíveis. O escopo `gmail.labels` adicional não é solicitado.
 5. Usuários de teste: adicione seu Gmail
 
 ---
@@ -57,6 +57,8 @@ source .venv/bin/activate      # Linux/Mac
 
 # Instale dependências
 pip install -r requirements.txt
+# Para executar os testes automatizados:
+pip install -r requirements-dev.txt
 
 # Configure variáveis de ambiente
 cp .env.example .env
@@ -65,9 +67,12 @@ cp .env.example .env
 
 ### .env mínimo
 
+`OPENAI_API_KEY` só é necessária para classificação remota. Staging e simulação de planos do cache funcionam sem credenciais Google ou OpenAI. `scan --skip-claude` usa apenas heurísticas (o nome da flag foi preservado por compatibilidade).
+
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
 GMAIL_CREDENTIALS_PATH=./credentials/credentials.json
+GMAIL_TOKEN_PATH=./credentials/token.json
 ```
 
 ---
@@ -87,8 +92,8 @@ python main.py staging
 # 4. Simular execução (dry-run)
 python main.py execute --dry-run
 
-# 5. Executar de verdade (pede confirmação)
-python main.py execute --category marketing
+# 5. Opcional: executar de verdade (exige LIVE e confirmação)
+python main.py execute --live --category marketing
 
 # 6. Gerar relatório
 python main.py report
@@ -104,7 +109,7 @@ python main.py scan                          # scan completo
 python main.py scan --limit 500             # limita a 500 emails
 python main.py scan --query "is:unread"     # filtra por query Gmail
 python main.py scan --skip-claude           # só heurísticas (mais rápido)
-python main.py scan --batch-size 20         # lotes menores para Claude
+python main.py scan --batch-size 20         # lotes menores para OpenAI
 ```
 
 ### `classify`
@@ -123,11 +128,11 @@ python main.py staging --preview 20          # mais exemplos
 
 ### `execute`
 ```bash
-python main.py execute --dry-run                        # simula
-python main.py execute --category marketing --dry-run   # simula só marketing
-python main.py execute --category marketing             # executa (pede confirmação)
-python main.py execute --category marketing --confirm   # executa sem prompt
-python main.py execute --action archive                 # arquiva tudo
+python main.py execute                                  # simula (padrão)
+python main.py execute --category marketing             # simula só marketing
+python main.py execute --live --category marketing      # LIVE: executa após confirmação
+python main.py execute --live --confirm --category marketing  # LIVE: confirmação via flag
+python main.py execute --live --action archive          # LIVE: arquiva após confirmação
 ```
 
 ### `show`
@@ -139,14 +144,14 @@ python main.py show category marketing --limit 50
 
 ### `delete-sender`
 ```bash
-python main.py delete-sender "noreply@shopify.com" --dry-run
-python main.py delete-sender "noreply@shopify.com"   # executa com confirmação
+python main.py delete-sender "noreply@shopify.com"     # simula (padrão)
+python main.py delete-sender "noreply@shopify.com" --live  # pede confirmação antes de mover para lixeira
 ```
 
 ### `mark-read`
 ```bash
-python main.py mark-read --category marketing --dry-run
-python main.py mark-read --category newsletter
+python main.py mark-read --category marketing           # simula (padrão)
+python main.py mark-read --category newsletter --live   # pede confirmação antes de marcar como lido
 ```
 
 ### `report`
@@ -182,21 +187,37 @@ python main.py unsubscribe --limit 100
 
 ---
 
-## 6. Segurança
+## 6. Segurança e testes sem Gmail real
 
-- **Deleções são sempre reversíveis**: emails vão para a lixeira, não são deletados permanentemente
-- **Confirmação obrigatória**: digitação de `DELETE` ou `EXECUTE` antes de ações em massa
-- **Safe mode**: variável `SAFE_MODE=true` bloqueia ações sem confirmação
-- **Log imutável**: todo email movido para lixeira é registrado em `reports/deleted_log.jsonl`
+- **Lixeira**: a ação `delete` do plano move para a lixeira; a CLI não oferece exclusão permanente
+- **Dry-run por padrão**: `execute`, `delete-sender` e `mark-read` só alteram a caixa com `--live`
+- **Confirmação LIVE**: operações de escrita pedem confirmação. `execute --live --confirm` permite automação explícita; use após revisar o staging
+- **Safe mode**: variável mantida por compatibilidade; desligá-la não remove a confirmação de lixeira
+- **Log local**: movimentações são anexadas a `reports/deleted_log.jsonl`. Falha ao registrar um email já movido é reportada sem contar a movimentação duas vezes
 - **Categorias protegidas**: `invoice`, `important`, `platform_credential` nunca são deletadas automaticamente
-- **Confiança mínima**: emails com confiança < 0.80 vão para revisão manual
+- **Confiança mínima**: limiar global configurável; exclusões de marketing exigem ao menos 0.85 e spam 0.90. Cache de remetente isolado não autoriza ações
+- **Escopo OAuth mínimo**: somente `gmail.modify`; tokens locais são ignorados pelo Git
+
+Os testes usam mocks e não autenticam no Gmail:
+
+```bash
+python -m pytest
+```
+
+Tokens com escopos diferentes dos configurados exigem novo OAuth pelo fluxo normal. Previews recusam tokens ausentes/expirados ou com escopo diferente, sem abrir login ou renovar/gravar token. A gravação normal usa substituição atômica. `execute`, `staging` e `mark-read` em dry-run usam apenas o cache; `delete-sender`/`unsubscribe` precisam ler o Gmail e exigem token já válido.
+
+O cache agora é vinculado à conta obtida no scan. Um cache antigo não vazio e sem vínculo não pode ser usado em LIVE nem vinculado silenciosamente: preserve-o e configure outro `DB_PATH`, por exemplo `./data/cache-v2.db`, antes de novo scan. Uma conta diferente não pode aplicar planos desse cache.
+
+A interface inicia com `streamlit run streamlit_app.py`; `.streamlit/config.toml` restringe o endereço a `127.0.0.1`. A tela Execute mostra os IDs e ações do plano limitado. Alterações na prévia exigem confirmação renovada e o executor verifica o snapshot aprovado.
+
+Auditoria final: **50 testes aprovados**, incluindo SQLite real temporário, respostas sintéticas de OAuth/OpenAI/Gmail e testes de rerun via Streamlit AppTest. Acesso externo é bloqueado nos testes. Isso não homologa OAuth real, classificação remota nem alterações em conta real. Evidências em `docs/recovery/02-final-audit.md`.
 
 ---
 
 ## 7. Arquitetura
 
 ```
-Scan → Heurísticas locais → [ambíguos] → Claude API (lotes de 30) → SQLite cache
+Scan → Heurísticas locais → [ambíguos] → OpenAI API (lotes de 30) → SQLite cache
                                                     ↓
                                             Staging (dry-run)
                                                     ↓

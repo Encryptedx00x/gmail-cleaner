@@ -29,12 +29,30 @@ CATEGORY_LABEL_MAP: dict[str, str] = {
 }
 
 
+def prepare_execution_plan(category=None, action=None, limit=None) -> dict:
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise ValueError('limit deve ser um inteiro positivo.')
+    staging = generate_staging_plan(action_filter=action, category_filter=category, safe_only=True)
+    plan = {}
+    remaining = limit
+    for name, ids in staging.get('plan', {}).items():
+        selected = ids if remaining is None else ids[:remaining]
+        if selected:
+            plan[name] = list(selected)
+        if remaining is not None:
+            remaining -= len(selected)
+    selected_ids = {message_id for ids in plan.values() for message_id in ids}
+    return {'plan': plan, 'total': len(selected_ids), 'account': staging.get('account'),
+            'classifications': [row for row in staging.get('classifications', []) if row['email_id'] in selected_ids]}
+
+
 def execute_plan(
     category: Optional[str] = None,
     action: Optional[str] = None,
     dry_run: bool = True,
     confirm: bool = False,
     limit: Optional[int] = None,
+    approved_plan: Optional[dict] = None,
 ) -> dict:
     """
     Executa o plano de ação gerado pelo staging.
@@ -52,18 +70,13 @@ def execute_plan(
     Returns:
         Dict com contadores: success, failed, skipped por ação.
     """
-    settings = get_settings()
-    cache = EmailCache()
-
     mode = "[DRY-RUN]" if dry_run else "[LIVE]"
     console.rule(f"[bold {'yellow' if dry_run else 'red'}]EXECUTE {mode}[/bold {'yellow' if dry_run else 'red'}]")
 
     # Gera plano
-    staging = generate_staging_plan(
-        action_filter=action,
-        category_filter=category,
-        safe_only=True,
-    )
+    staging = prepare_execution_plan(category, action, limit)
+    if approved_plan is not None and approved_plan != staging:
+        raise RuntimeError('O plano mudou. Revise a nova prévia antes de confirmar.')
 
     plan = staging.get("plan", {})
     classifications = staging.get("classifications", [])
@@ -95,6 +108,10 @@ def execute_plan(
     if not dry_run:
         service = get_gmail_service()
         client = GmailClient(service)
+        account = staging.get('account')
+        current_account = client.get_profile().get('emailAddress', '').strip().casefold()
+        if not account or account.casefold() != current_account:
+            raise RuntimeError('A conta Gmail atual não corresponde ao cache. Faça scan com DB_PATH novo para essa conta.')
 
     # Monta índice de metadados para o log
     cls_index = {c["email_id"]: c for c in classifications}
@@ -104,9 +121,6 @@ def execute_plan(
     # ── Processa cada ação ────────────────────────────────────────────────────
 
     for current_action, email_ids in plan.items():
-        if limit:
-            email_ids = email_ids[:limit]
-
         if not email_ids:
             continue
 

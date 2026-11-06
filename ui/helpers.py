@@ -47,13 +47,13 @@ DESTRUCTIVE_ACTIONS = {"delete", "trash"}
 
 # ── Verificação de ambiente ───────────────────────────────────────────────────
 
-def check_env() -> tuple[bool, list[str]]:
+def check_env(require_ai: bool = True) -> tuple[bool, list[str]]:
     """Verifica se as variáveis de ambiente obrigatórias estão configuradas."""
     from dotenv import load_dotenv
     load_dotenv()
 
     missing = []
-    if not os.getenv("OPENAI_API_KEY"):
+    if require_ai and not os.getenv("OPENAI_API_KEY"):
         missing.append("OPENAI_API_KEY")
     creds = os.getenv("GMAIL_CREDENTIALS_PATH", "./credentials/credentials.json")
     if not Path(creds).exists():
@@ -72,7 +72,10 @@ def load_stats() -> dict:
     """Carrega estatísticas do cache SQLite (cache de 30s)."""
     try:
         from src.classifier.cache import EmailCache
-        return EmailCache().get_stats()
+        from src.utils.config import get_settings
+        if not get_settings().db_path.exists():
+            return {'total_emails':0, 'total_senders':0, 'by_category':[], 'by_action':[]}
+        return EmailCache(read_only=True).get_stats()
     except Exception as e:
         return {
             "total_emails": 0,
@@ -88,7 +91,10 @@ def load_category_emails(category: str) -> list[dict]:
     """Carrega emails de uma categoria específica."""
     try:
         from src.classifier.cache import EmailCache
-        return EmailCache().get_by_category(category)
+        from src.utils.config import get_settings
+        if not get_settings().db_path.exists():
+            return []
+        return EmailCache(read_only=True).get_by_category(category)
     except Exception:
         return []
 
@@ -103,7 +109,10 @@ def load_last_scan_time() -> Optional[str]:
     """Retorna o timestamp da última classificação."""
     try:
         from src.classifier.cache import EmailCache
-        cache = EmailCache()
+        from src.utils.config import get_settings
+        if not get_settings().db_path.exists():
+            return None
+        cache = EmailCache(read_only=True)
         with cache._connect() as conn:
             row = conn.execute(
                 "SELECT MAX(classified_at) as last FROM email_cache"
